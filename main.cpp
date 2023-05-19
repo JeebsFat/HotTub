@@ -14,6 +14,8 @@
 //#include "AnimChar.h"
 using namespace std;
 
+int counter = 0;
+
 void connectToWiFi();
 void talkToClient();
 void setupOTA();
@@ -43,6 +45,8 @@ void printStandby();
 void printTemplate(); 
 void resetUpdateTimer();
 void computerMusic();
+void setupTasks();
+void loop2(void * pvParameters);
 
 const int tempSensorWhitePin = 34;    // <--digital read
 const int tempSensorBlackPin = 35;    // <--digital read
@@ -71,6 +75,7 @@ OneWire oneWireTempSensors(oneWireTempSensorsPin);            // Setup a oneWire
 DallasTemperature tubTempSensor(&oneWireTempSensors);         // Pass our oneWire reference to Dallas Temperature sensor 
 LiquidCrystal_I2C lcd(0x27,20,4);
 WiFiServer server(80);
+TaskHandle_t loop2Task;
 
 /* Animate Char definitions
 //AnimChar bubbleChar(bubbleCharByte[8][8], 8);   
@@ -151,6 +156,7 @@ Timers keepPumpingTimer;
 Timers blowerTimeOutTimer;
 Timers flowSensorBuffer;
 Timers updateTimer;
+Timers updateTimer2;
 
 int pumpOffTime = 7 * hour;
 int pumpOnTime = 30 * minute;
@@ -176,6 +182,7 @@ String output27State = "off";
 /*--------------------SETUP--------------------*/
 
 void setup() {
+  
   tone(beepPin, 4000, 50);
   noTone(beepPin);
   delay(100);
@@ -188,6 +195,8 @@ void setup() {
   tone(beepPin, 4500, 250);
   noTone(beepPin);
   delay(500);
+
+  setupTasks();
 
   Serial.begin(9600);
   Serial.print("hot tubbin' and debuggin'");
@@ -231,6 +240,7 @@ void setup() {
   
   circulationTimer.start(pumpOffTime);    // initialize  timers
   updateTimer.start(second);
+  updateTimer2.start(second);
   keepPumpingTimer.start(second);
   delay(second);
   
@@ -239,19 +249,17 @@ void setup() {
   printTargetTemp();
 }
 
-/*--------------------LOOP--------------------*/
+/*--------------------LOOPS--------------------*/
 
 void loop() { 
   loopTelnet();
   loopOTA();
-  talkToClient();
   checkButtons();                             // sets targetTemp, blowing, and lighting, and standby
   if (!standby) {                             // not in standby     
     if (updateTimer.available())              // if time to update, then...
     {     
       checkCirculationTimer();                // sets pumpFromCirc T/F
       checkBlowerTimeOut();                   // sets blowing false if unattended for blowerTime
-      checkSensors();                         // gets values from sensors
       processTemps();                         // looks at sensor values and set heating and pumpFromHeat T/F
       checkKeepPumping();                     // set pumpFromKeepPumping true if recently heating
       determinePumping();                     // set pumping from pumpFrom[...]
@@ -261,6 +269,17 @@ void loop() {
   //checkSafeties();                        // check fuses flow sensors etc...
   resetUpdateTimer();
   lastStandby = standby;
+}
+
+void loop2( void * parameter) {
+  while (true) {
+    talkToClient();
+    if (updateTimer2.available()) {
+      checkSensors();
+      updateTimer2.stop();
+      updateTimer2.start(updateTime);
+    }
+  }
 }
 
 /*--------------------CORE FUNCTIONS--------------------*/
@@ -311,14 +330,23 @@ void checkButtons() {
     if (standby) 
     {
       allOff();
+      tone(beepPin, 3000, 50);
+      noTone(beepPin);
+      delay(100);
+      tone(beepPin, 2500, 250);
+      noTone(beepPin);
       printStandby();
-      computerMusic();
     } else {
+      tone(beepPin, 2500, 50);
+      noTone(beepPin);
+      delay(100);
+      tone(beepPin, 3000, 250);
+      noTone(beepPin);
       printTemplate(); 
       printHeating();
       printPumping();
       printBlowing();
-      printCirc();   
+      printCirc();
     }
   }
 } 
@@ -352,8 +380,6 @@ void checkSensors() {
   tubTempSensor.requestTemperatures();
   currentTubTemp = tubTempSensor.getTempFByIndex(0);
   currentUnitTemp = tubTempSensor.getTempFByIndex(1);
-  printTubTemp();
-  printUnitTemp();
 }
 
 void processTemps() {
@@ -383,6 +409,8 @@ void processTemps() {
     heating = false;
     pumpFromHeat = false;
   }
+  printTubTemp();
+  printUnitTemp();
 }
 
 void checkKeepPumping() {
@@ -406,7 +434,7 @@ void determinePumping() {
 void operateHotTub() {
   if (heating!=lastHeating) {
     if (heating) { 
-      //digitalWrite(heaterPin, HIGH);      //DEBUG - DON'T HEAT IF DRY 
+      digitalWrite(heaterPin, HIGH);      // FOR DEBUG - DON'T HEAT IF DRY 
       printHeating();
     } else {
       digitalWrite(heaterPin, LOW); 
@@ -416,7 +444,7 @@ void operateHotTub() {
   }
   if (pumping!=lastPumping) {
     if (pumping) { 
-      //digitalWrite(pumperPin, HIGH);      //DEBUG - DON'T PUMP IF DRY 
+      digitalWrite(pumperPin, HIGH);      // FOR DEBUG - DON'T PUMP IF DRY 
       printPumping();
     } else {
       digitalWrite(pumperPin, LOW); 
@@ -748,6 +776,16 @@ void loopTelnet() {
 
 /*--------------------TASK HANDLING--------------------*/
 
+void setupTasks() {
+  xTaskCreatePinnedToCore(
+      loop2, /* Function to implement the task */
+      "loop 2 on second core", /* Name of the task */
+      10000,  /* Stack size in words */
+      NULL,  /* Task input parameter */
+      0,  /* Priority of the task */
+      &loop2Task,  /* Task handle. */
+      0); /* Core where the task should run */
+}
 
 /*--------------------UTILITIES--------------------*/
 
@@ -763,29 +801,29 @@ void allOff() {
 }
 
 void printTargetTemp() {
-    lcd.setCursor(5,0);
+    lcd.setCursor(6,0);
     if (targetTemp>=100) { lcd.print(targetTemp, 1); }
     else {
       lcd.print(" ");
-      lcd.setCursor(6,0); 
+      lcd.setCursor(7,0); 
       lcd.print(targetTemp, 1);
     }
 }
 void printTubTemp() {
-  lcd.setCursor(5,1);
+  lcd.setCursor(6,1);
   if (currentTubTemp>=100) { lcd.print(currentTubTemp, 1); }
   else {
     lcd.print(" ");
-    lcd.setCursor(6,1); 
+    lcd.setCursor(7,1); 
     lcd.print(currentTubTemp, 1);
   }
 }
 void printUnitTemp() {
-  lcd.setCursor(5,2);
+  lcd.setCursor(6,2);
   if (currentUnitTemp>=100) { lcd.print(currentUnitTemp, 1); }
   else {
     lcd.print(" ");
-    lcd.setCursor(6,2); 
+    lcd.setCursor(7,2); 
     lcd.print(currentUnitTemp, 1);
   }
 }
